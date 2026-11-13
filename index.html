@@ -1,0 +1,138 @@
+
+
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Adrian the Investor</title>
+  <style>
+    body { background:#0d1117; color:#c9d1d9; font-family:monospace; padding:20px; }
+    .card { background:#161b22; border:1px solid #30363d; border-radius:8px;
+            padding:16px; margin-bottom:16px; }
+    .legend { display:flex; gap:24px; margin-bottom:8px; font-size:14px; }
+    .legend span { display:flex; align-items:center; gap:6px; }
+    .dot { width:12px; height:12px; border-radius:50%; display:inline-block; }
+    .sig { border-left:4px solid #d29922; padding-left:10px; margin:8px 0; }
+    canvas { background:#0d1117; width:100%; height:360px; }
+    .price-row { display:flex; gap:32px; margin-bottom:12px; }
+    .price-row div { font-size:20px; }
+    .up { color:#3fb950; } .down { color:#f85149; }
+  </style>
+</head>
+<body>
+  <h1>Adrian the Investor</h1>
+
+  <div class="card">
+    <div class="price-row" id="prices"></div>
+    <div class="legend">
+      <span><i class="dot" style="background:#f0c000"></i>XAUUSD</span>
+      <span><i class="dot" style="background:#58a6ff"></i>EURUSD</span>
+      <span><i class="dot" style="background:#3fb950"></i>DXY</span>
+    </div>
+    <canvas id="chart" width="1200" height="360"></canvas>
+  </div>
+
+  <div class="card">
+    <h2>Signals</h2>
+    <div id="signals">None yet.</div>
+  </div>
+
+  <script>
+    const COLORS = { XAUUSD: "#f0c000", EURUSD: "#58a6ff", DXY: "#3fb950" };
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      renderPrices(data.snapshots);
+      renderChart(data.snapshots);
+      renderSignals(data.signals);
+    };
+
+    function renderPrices(snaps) {
+      const el = document.getElementById("prices");
+      el.innerHTML = Object.entries(snaps).map(([sym, s]) => {
+        const c = s.candles;
+        const dir = c.length >= 2 && c.at(-1).c >= c.at(-2).c ? "up" : "down";
+        return `<div><b style="color:${COLORS[sym] || '#c9d1d9'}">${sym}</b>
+                <span class="${dir}">${s.price}</span>
+                <small>USD ${s.usd}</small></div>`;
+      }).join("");
+    }
+
+    function renderChart(snaps) {
+      const cv = document.getElementById("chart");
+      const ctx = cv.getContext("2d");
+      ctx.clearRect(0, 0, cv.width, cv.height);
+
+      // Only keep symbols that have at least 2 candles
+      const series = Object.entries(snaps)
+        .filter(([_, s]) => s.candles.length >= 2)
+        .map(([sym, s]) => {
+          const base = s.candles[0].c;
+          return {
+            sym,
+            // Normalize to % change from first candle
+            points: s.candles.map(c => ({
+              t: c.t,
+              pct: ((c.c - base) / base) * 100
+            }))
+          };
+        });
+
+      if (series.length === 0) return;
+
+      // Shared Y range across all normalized series
+      const allPct = series.flatMap(s => s.points.map(p => p.pct));
+      const yMin = Math.min(...allPct, 0);
+      const yMax = Math.max(...allPct, 0);
+      const pad = 10;
+      const yScale = (v) =>
+        cv.height - pad - ((v - yMin) / (yMax - yMin || 1)) * (cv.height - pad * 2);
+
+      // Zero line
+      ctx.strokeStyle = "#30363d";
+      ctx.beginPath();
+      ctx.moveTo(0, yScale(0));
+      ctx.lineTo(cv.width, yScale(0));
+      ctx.stroke();
+
+      // Max candle count across series (align on right edge)
+      const maxLen = Math.max(...series.map(s => s.points.length));
+      const xStep = cv.width / (maxLen - 1 || 1);
+
+      // Draw each series as a line
+      series.forEach(s => {
+        ctx.strokeStyle = COLORS[s.sym] || "#c9d1d9";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        const offset = maxLen - s.points.length; // right-align
+        s.points.forEach((p, i) => {
+          const x = (i + offset) * xStep;
+          const y = yScale(p.pct);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      });
+
+      // Y-axis labels
+      ctx.fillStyle = "#8b949e";
+      ctx.font = "11px monospace";
+      ctx.fillText(`${yMax.toFixed(2)}%`, 4, 14);
+      ctx.fillText(`${yMin.toFixed(2)}%`, 4, cv.height - 4);
+    }
+
+    function renderSignals(signals) {
+      const el = document.getElementById("signals");
+      if (!signals.length) {
+        el.textContent = "None yet.";
+        return;
+      }
+      el.innerHTML = signals.map(x =>
+        `<div class="sig"><b>${x.side.toUpperCase()} ${x.symbol}</b>
+         @ ${x.entry} · stop ${x.stop}<br>${x.reason}</div>`).join("");
+    }
+  </script>
+</body>
+</html>
